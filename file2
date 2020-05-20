@@ -1,0 +1,286 @@
+************************************************************************************************************
+                 Realtime App Report - only for PRR and MOS
+                 Report runs daily
+                 Report Created by Justy Thomas
+                 Date: July 12, 2019
+
+				 Report Last Updated by Justy Thomas
+				 Date: November 22, 2019
+
+*************************************************************************************************************;
+options metaserver="pcbsasauth.ngco.com"
+
+metaport=8561
+metaprotocol=bridge
+metarepository=Foundation; 
+
+options nosyntaxcheck;
+options emailhost = lclsmtp.ngco.com;
+
+
+data   _null_;
+
+date1 = intnx("day",today(),0);
+start_dt = year(date1)*10000 + month(date1)*100 + day(date1);
+
+
+call symput ("date1",date1);
+call symput ("start_dt",start_dt);
+
+run;
+%put &date1;
+%put &start_dt;
+
+
+
+/*retreive application data from the real-time table*/
+proc sql;
+connect to oracle(authdomain="lip053" path="P053");
+create table rt_0 as
+select *
+from connection to oracle
+	(
+	select	APA_APP_NUM
+	        ,PC_MC_CUST_APPL_ID
+			,SOURCE_CD 			/*interceptor company*/
+			,INTERCEPTOR_ID 	/*interceptor ID*/
+			,REC_CREATE_TMS		/*date time stamp when record created in real-time table*/
+			,PROV_CD
+			,REC_ID
+		
+	from 	PCMC.Adm_rt_response_uns
+	where 	APA_APP_NUM >= 3127654 /*recommend to filter by an app # from 2019 to reduce run-time*/
+			and SOURCE_CD in ('IMM','JWR','MOS','PRR','SDI')
+	);
+disconnect from oracle;
+quit;
+	
+/*keep only the 1st record of the application 
+this will be used as the proxy for application submit date/time stamp*/
+proc sql;
+	create table rt_1
+	as select *
+	from rt_0
+	group by APA_APP_NUM
+	having REC_CREATE_TMS = min(REC_CREATE_TMS)
+	;
+quit;
+
+/*remove any duplicates (should not be any after filter in step above)*/
+proc sort data=rt_1 nodupkey;
+	BY APA_APP_NUM;
+run;
+*********************REGISTRATION*********************;
+proc sql;
+connect to oracle(authdomain="lip053" path="P053");
+create table REG as
+select *
+from connection to oracle
+	(
+	select	PC_MC_CUST_APPL_ID,
+			OPERATOR_ID,
+			STORE_ID,
+			SOURCE_CD,
+			APPL_TMS as APPLICATION_SUBMITTED
+		
+	from 	PCMC.PCMC_REGISTRATION
+	where 	SOURCE_CD in ('IMM','JWR','MOS','PRR','SDI')
+	);
+disconnect from oracle;
+quit;
+
+data REG;
+set REG;
+STORE = STORE_ID *1;
+DROP STORE_ID;
+RUN;
+
+PROC SQL;
+CREATE table rt_reg as
+select a.*, b.STORE
+from rt_1 a
+left join 
+reg b
+on a.PC_MC_CUST_APPL_ID = b.PC_MC_CUST_APPL_ID
+order by APA_APP_NUM;
+quit;
+
+
+********************************************************************
+Getting time 24 hr difference
+********************************************************************;
+
+data rt_2;
+set rt_reg;
+
+Date_hit_submit =  DATEPART(REC_CREATE_TMS);
+dt = year(datepart(REC_CREATE_TMS))*10000 + month(datepart(REC_CREATE_TMS))*100 + day(datepart(REC_CREATE_TMS)) ;
+SUBMIT_TM=intnx('hour',REC_CREATE_TMS,-24,"same"); 
+
+REP_ID_NEW = SUBSTR(INTERCEPTOR_ID,1,3)|| SUBSTR(TRIM(INTERCEPTOR_ID),LENGTH(TRIM(INTERCEPTOR_ID))-3);
+INTERCEPTOR = upcase(substr(INTERCEPTOR_ID, 1,3));
+
+FORMAT Date_hit_submit DATE9. SUBMIT_TM TOD8.;
+if dt=&start_dt;
+
+run;
+
+
+
+
+data rt_3;
+set rt_2;
+
+hr= hour(SUBMIT_TM);
+if 0 le hr lt 9 then hr1 =  '12:00 AM to 08:59 AM';
+if 9 le hr lt 10 then hr1 =  '09:00 AM to 09:59 AM';
+if 10 le hr lt 11 then hr1 = '10:00 AM to 10:59 AM';
+if 11 le hr lt 12 then hr1 = '11:00 AM to 11:59 AM';
+if 12 le hr lt 13 then hr1 = '12:00 PM to 12:59 PM';
+if 13 le hr lt 14 then hr1 = '01:00 PM to 01:59 PM';
+if 14 le hr lt 15 then hr1 = '02:00 PM to 02:59 PM';
+if 15 le hr lt 16 then hr1 = '03:00 PM to 03:59 PM';
+if 16 le hr lt 17 then hr1 = '04:00 PM to 04:59 PM';
+if 17 le hr lt 18 then hr1 = '05:00 PM to 05:59 PM';
+if 18 le hr lt 19 then hr1 = '06:00 PM to 06:59 PM';
+if 19 le hr lt 20 then hr1 = '07:00 PM to 07:59 PM';
+if 20 le hr lt 21 then hr1 = '08:00 PM to 08:59 PM';
+if 21 le hr lt 24 then hr1 = '09:00 PM to 11:59 PM';
+run;
+
+data rt_4;
+set rt_3;
+if hr1 = '12:00 AM to 08:59 AM' then hr_group=1;
+if hr1 = '09:00 AM to 09:59 AM' then hr_group=2;
+if hr1 = '10:00 AM to 10:59 AM' then hr_group=3;
+if hr1 = '11:00 AM to 11:59 AM' then hr_group=4;
+if hr1 = '12:00 PM to 12:59 PM' then hr_group=5;
+if hr1 = '01:00 PM to 01:59 PM' then hr_group=6;
+if hr1 = '02:00 PM to 02:59 PM' then hr_group=7;
+if hr1 = '03:00 PM to 03:59 PM' then hr_group=8;
+if hr1 = '04:00 PM to 04:59 PM' then hr_group=9;
+if hr1 = '05:00 PM to 05:59 PM' then hr_group=10;
+if hr1 = '06:00 PM to 06:59 PM' then hr_group=11;
+if hr1 = '07:00 PM to 07:59 PM' then hr_group=12;
+if hr1 = '08:00 PM to 08:59 PM' then hr_group=13;
+if hr1 = '09:00 PM to 11:59 PM' then hr_group=14;
+run;
+
+proc freq data=rt_4;
+table hr1;
+run;
+
+
+data rt_5;
+set rt_4;
+Time_Range= hr_group || '....'|| hr1 ;
+apps=1;
+run;
+
+proc freq data=rt_5;
+table Time_Range;
+run;
+
+
+proc sort data=rt_5;
+by   REP_ID_NEW STORE Date_hit_submit SUBMIT_TM Time_Range;
+run;
+
+data final;
+retain INTERCEPTOR
+REP_ID_NEW
+APA_APP_NUM
+hr
+hr1
+hr_group
+Date_hit_submit
+SUBMIT_TM
+Time_Range
+STORE
+apps
+;
+set rt_5;
+keep INTERCEPTOR
+REP_ID_NEW
+APA_APP_NUM
+hr
+hr1
+hr_group
+Date_hit_submit
+SUBMIT_TM
+Time_Range
+STORE
+apps
+;
+run;
+
+
+
+PROC FREQ DATA=final;
+table Time_Range*interceptor/ nocol nopercent norow;
+run;
+
+
+data IMM SDI JWR MOS PRR;
+SET FINAL;
+IF INTERCEPTOR ='IMM' then output IMM;
+IF INTERCEPTOR ='SDI' then output SDI;
+IF INTERCEPTOR ='JWR' then output JWR;
+IF INTERCEPTOR ='MOS' then output MOS;
+IF INTERCEPTOR ='PRR' then output PRR;
+RUN;
+
+
+********************************************************************
+						Process PRR APPS
+********************************************************************;
+libname team '/pcb/dmt/teamshare';
+
+data REGION1;
+SET team.REGION1;
+if store ^=.;
+RUN;
+
+proc freq data=REGION1;
+table region/out=re;
+run;
+
+DATA PRR_REGION1 ;
+SET REGION1;
+INT_REGION='PRR_REGION';
+RUN;
+
+
+******************************PRR*******************************;
+PROC SQL;
+	CREATE TABLE PRR_REGION_STORE AS
+	select a.*, b.* 
+	FROM PRR_REGION1 a
+	LEFT OUTER JOIN PRR b
+		ON a.store=b.store 
+	;
+	QUIT;
+
+proc freq data=PRR_REGION_STORE;
+table region/out=re_PRR;
+run;
+
+
+	DATA REGION_STORE_SUMMARY;
+	SET PRR_REGION_STORE;
+	IF APPS=. THEN APPS=0 ;
+	IF APPS=0 then Time_Range= "Blank";
+	if Time_Range= "Blank" then hr_group = 99;
+	RUN;
+
+	******************************;
+libname prlib	ODBC datasrc="DSG_PR" user="remote" password="remote" owner="DBO";
+		proc sql;
+			drop table	prlib.PRR_STORE_20190723;
+		quit;
+
+		data	prlib.PRR_STORE_20190723	(insertbuff = 32767);
+		set		REGION_STORE_SUMMARY;
+		run;
+		
+		libname prlib	clear;
